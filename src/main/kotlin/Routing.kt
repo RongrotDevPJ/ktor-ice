@@ -1,98 +1,119 @@
 package com.example
 
-import io.ktor.http.HttpStatusCode
+import io.ktor.http.*
 import io.ktor.server.application.*
-import io.ktor.server.request.receive
+import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class Task(val id: Int, val content: String, val isDone: Boolean)
+data class Poll(val id: Int, val question: String)
 
 @Serializable
-data class TaskRequest(val content: String, val isDone: Boolean)
+data class PollOption(val id: Int, val text: String, var voteCount: Int = 0, val pollId: Int)
 
-object TaskRepository {
-    private val tasks = mutableListOf(
-        Task(id = 1, content = "Learn Kotlin", isDone = true),
-        Task(id = 2, content = "Build a REST API", isDone = false),
-        Task(id = 3, content = "Write Unit Tests", isDone = false)
-    )
+@Serializable
+data class PollRequest(val question: String)
 
-    fun getAll(): List<Task> = tasks
+@Serializable
+data class PollOptionRequest(val text: String, val pollId: Int)
 
-    fun getById(id: Int): Task? = tasks.find { it.id == id }
+@Serializable
+data class PollResult(val id: Int, val question: String, val options: List<PollOption>)
 
-    fun add(task: Task) {
-        tasks.add(task)
+object PollRepository {
+    private val polls = mutableListOf<Poll>()
+    private val pollOptions = mutableListOf<PollOption>()
+
+    // Add this clear method for testing purposes
+    fun clear() {
+        polls.clear()
+        pollOptions.clear()
     }
 
-    fun update(id: Int, updatedTask: Task): Boolean {
-        val taskIndex = tasks.indexOfFirst { it.id == id }
-        return if (taskIndex != -1) {
-            tasks[taskIndex] = updatedTask
+    fun getAllPolls(): List<Poll> = polls
+
+    fun getPoll(id: Int): Poll? = polls.find { it.id == id }
+
+    fun addPoll(poll: Poll) {
+        polls.add(poll)
+    }
+
+    fun deletePoll(id: Int): Boolean {
+        pollOptions.removeIf { it.pollId == id }
+        return polls.removeIf { it.id == id }
+    }
+
+    fun addOption(option: PollOption) {
+        pollOptions.add(option)
+    }
+
+    fun getOptionsByPoll(pollId: Int): List<PollOption> = pollOptions.filter { it.pollId == pollId }
+
+    fun voteOption(id: Int): Boolean {
+        val option = pollOptions.find { it.id == id }
+        return if (option != null) {
+            option.voteCount++
             true
-        } else {
-            false
-        }
+        } else false
     }
 
-    fun delete(id: Int): Boolean {
-        return tasks.removeIf { it.id == id }
+    fun getPollWithResults(id: Int): PollResult? {
+        val poll = getPoll(id)
+        val options = getOptionsByPoll(id)
+        return poll?.let { PollResult(it.id, it.question, options) }
     }
 }
 
-fun Application.configureRouting() {
+fun Application.configurePollRouting() {
     routing {
-        get("/tasks") {
-            val tasks = TaskRepository.getAll()
-            call.respond(tasks)
+        post("/polls") {
+            val request = call.receive<PollRequest>()
+            val newId = (PollRepository.getAllPolls().maxOfOrNull { it.id } ?: 0) + 1
+            val poll = Poll(newId, request.question)
+            PollRepository.addPoll(poll)
+            call.respond(HttpStatusCode.Created, poll)
         }
 
-        get("/tasks/{id}") {
+        delete("/polls/{id}") {
             val id = call.parameters["id"]?.toIntOrNull()
-            val task = id?.let { TaskRepository.getById(it) }
-
-            if (task != null) {
-                call.respond(task)
-            } else {
-                call.respondText("Task with id $id not found", status = HttpStatusCode.NotFound)
-            }
-        }
-
-        post("/tasks") {
-            val taskRequest = call.receive<TaskRequest>()
-            val newId = (TaskRepository.getAll().maxOfOrNull { it.id } ?: 0) + 1
-            val task = Task(id = newId, content = taskRequest.content, isDone = taskRequest.isDone)
-            TaskRepository.add(task)
-            call.respond(HttpStatusCode.Created, task)
-        }
-
-        put("/tasks/{id}") {
-            val id = call.parameters["id"]?.toIntOrNull()
-            val taskRequest = call.receive<TaskRequest>()
-
-            when {
-                id == null -> call.respond(HttpStatusCode.BadRequest, "Invalid ID")
-                else -> {
-                    val updatedTask = Task(id = id, content = taskRequest.content, isDone = taskRequest.isDone)
-                    if (TaskRepository.update(id, updatedTask)) {
-                        call.respond(HttpStatusCode.OK, updatedTask)
-                    } else {
-                        call.respond(HttpStatusCode.NotFound, "Task not found")
-                    }
-                }
-            }
-        }
-
-        delete("/tasks/{id}") {
-            val id = call.parameters["id"]?.toIntOrNull()
-            if (id != null && TaskRepository.delete(id)) {
+            if (id != null && PollRepository.deletePoll(id)) {
                 call.respond(HttpStatusCode.NoContent)
             } else {
-                call.respond(HttpStatusCode.NotFound, "Task not found")
+                call.respond(HttpStatusCode.NotFound, "Poll not found")
             }
+        }
+
+        post("/options") {
+            val request = call.receive<PollOptionRequest>()
+            val newId = ((PollRepository.getOptionsByPoll(request.pollId).maxOfOrNull { it.id }) ?: 0) + 1
+            val option = PollOption(newId, request.text, pollId = request.pollId)
+            PollRepository.addOption(option)
+            call.respond(HttpStatusCode.Created, option)
+        }
+
+        post("/options/{id}/vote") {
+            val id = call.parameters["id"]?.toIntOrNull()
+            if (id != null && PollRepository.voteOption(id)) {
+                call.respond(HttpStatusCode.OK, "Vote recorded")
+            } else {
+                call.respond(HttpStatusCode.NotFound, "Option not found")
+            }
+        }
+
+        get("/polls/{id}/results") {
+            val id = call.parameters["id"]?.toIntOrNull()
+            val result = id?.let { PollRepository.getPollWithResults(it) }
+            if (result != null) {
+                call.respond(result)
+            } else {
+                call.respond(HttpStatusCode.NotFound, "Poll not found")
+            }
+        }
+
+        get("/polls") {
+            call.respond(PollRepository.getAllPolls())
         }
     }
 }
